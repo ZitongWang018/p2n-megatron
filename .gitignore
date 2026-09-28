@@ -1,0 +1,10 @@
+__pycache__/
+*.pyc
+vendor/
+*.log
+*.out
+*.pt
+*.tmp
+data/
+checkpoints/
+logs/
