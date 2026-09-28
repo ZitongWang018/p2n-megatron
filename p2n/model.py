@@ -45,7 +45,25 @@ QWEN3_70M = {
     "tie_embeddings": False,
 }
 
-MODEL_PROFILES = {"paper-600m": PAPER_600M, "qwen3-70m": QWEN3_70M}
+QWEN3_150M = {
+    "num_layers": 12,
+    "hidden_size": 768,
+    "ffn_hidden_size": 3328,
+    "num_attention_heads": 12,
+    "num_query_groups": 4,
+    "kv_channels": 64,
+    "vocab_size": 50304,
+    "core_start": 4,
+    "core_end": 8,
+    "parameter_count": 149_541_120,
+    "tie_embeddings": True,
+}
+
+MODEL_PROFILES = {
+    "paper-600m": PAPER_600M,
+    "qwen3-70m": QWEN3_70M,
+    "qwen3-150m": QWEN3_150M,
+}
 
 
 def make_transformer_config(*, profile: str = "paper-600m") -> TransformerConfig:

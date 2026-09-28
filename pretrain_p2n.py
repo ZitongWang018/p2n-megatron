@@ -144,8 +144,8 @@ def main():
                 Path(args.checkpoint_dir).mkdir(parents=True, exist_ok=True)
                 swan_run = swanlab.init(
                     workspace=args.swanlab_workspace, project=args.swanlab_project,
-                    name=f"qwen3-70m-{args.method}-bs{args.global_batch_size}",
-                    group="qwen3-70m-tpp20", mode="online", public=False,
+                    name=f"{args.profile}-{args.method}-bs{args.global_batch_size}",
+                    group=f"{args.profile}-tpp20", mode="online", public=False,
                     config={
                         "profile": args.profile, "method": args.method,
                         "parameters": parameter_count, "sequence_length": args.seq_len,
@@ -153,6 +153,10 @@ def main():
                         "global_batch_size": args.global_batch_size,
                         "gradient_accumulation": accumulation,
                         "learning_rate": args.learning_rate,
+                        "weight_decay": args.weight_decay,
+                        "warmup_ratio": args.warmup_ratio,
+                        "min_lr_ratio": args.min_lr_ratio,
+                        "activation_checkpointing": args.activation_checkpointing,
                         "steps": args.steps, "eod_id": args.eod_id,
                         "train_bin": args.train_bin,
                     },
@@ -237,7 +241,7 @@ def main():
                     "layer_calls": hook_counts if args.verify and not args.activation_checkpointing else None,
                     "gpu_peak_gib": round(torch.cuda.max_memory_allocated(device) / 2**30, 3),
                 }), flush=True)
-            if args.save_every and (step + 1) % args.save_every == 0:
+            if args.save_every and ((step + 1) % args.save_every == 0 or step + 1 == args.steps):
                 _save_checkpoint(args, model.module, optimizer, step + 1, rank, world)
             if valid is not None and args.eval_every and (
                 (step + 1) % args.eval_every == 0 or step + 1 == args.steps
