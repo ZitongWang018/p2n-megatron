@@ -1,4 +1,4 @@
-"""Four-rank data-parallel pretraining with Megatron Core's GPT layers.
+"""Data-parallel pretraining with Megatron Core's GPT layers.
 
 Launch through torchrun (usually via scripts/quickstart_4gpu.sbatch or
 scripts/train_4gpu.sbatch). This project uses Megatron Core for the full model
@@ -25,13 +25,17 @@ from megatron.core.tensor_parallel import model_parallel_cuda_manual_seed
 
 from p2n.data import TokenStream, synthetic_batch
 from p2n.model import (
-    PAPER_600M, P2NGPTModel, causal_document_mask, make_transformer_config, shift_previous,
+    MODEL_PROFILES, P2NGPTModel, causal_document_mask, make_transformer_config, shift_previous,
 )
 
 
 def arguments():
     parser = argparse.ArgumentParser()
     parser.add_argument("--method", choices=("p2n", "vanilla"), default="p2n")
+    parser.add_argument("--profile", choices=tuple(MODEL_PROFILES), default="paper-600m")
+    parser.add_argument("--swanlab", action="store_true")
+    parser.add_argument("--swanlab-workspace", default="ZitongWang")
+    parser.add_argument("--swanlab-project", default="P2N")
     parser.add_argument("--train-bin")
     parser.add_argument("--valid-bin")
     parser.add_argument("--eval-every", type=int, default=500)
@@ -68,6 +72,7 @@ def arguments():
 
 def main():
     args = arguments()
+    profile = MODEL_PROFILES[args.profile]
     rank = int(os.environ["RANK"])
     world = int(os.environ["WORLD_SIZE"])
     local_rank = int(os.environ["LOCAL_RANK"])
@@ -82,19 +87,21 @@ def main():
     model_parallel_cuda_manual_seed(args.seed)
     random.seed(args.seed)
     torch.backends.cuda.matmul.allow_tf32 = False
+    swan_run = None
     try:
         model = P2NGPTModel(
-            make_transformer_config(), method=args.method, eod_id=args.eod_id,
-            activation_checkpointing=args.activation_checkpointing,
+            make_transformer_config(profile=args.profile), method=args.method,
+            eod_id=args.eod_id, activation_checkpointing=args.activation_checkpointing,
+            profile=args.profile,
         ).to(device)
         parameter_count = sum(p.numel() for p in model.parameters())
-        if parameter_count != PAPER_600M["parameter_count"]:
+        if parameter_count != profile["parameter_count"]:
             raise AssertionError(
                 f"parameter count mismatch: got {parameter_count:,}; "
-                f"paper has {PAPER_600M['parameter_count']:,}"
+                f"profile {args.profile} expects {profile['parameter_count']:,}"
             )
         model = DDP(model, device_ids=[local_rank], broadcast_buffers=False)
-        hook_counts = {0: 0, PAPER_600M["core_start"]: 0, PAPER_600M["num_layers"] - 1: 0}
+        hook_counts = {0: 0, profile["core_start"]: 0, profile["num_layers"] - 1: 0}
         hooks = []
         if args.verify and not args.activation_checkpointing:
             for index in hook_counts:
@@ -107,19 +114,23 @@ def main():
             eps=1e-8, weight_decay=args.weight_decay, fused=True,
         )
         train = TokenStream(
-            args.train_bin, vocab_size=PAPER_600M["vocab_size"], allow_wrap=args.allow_wrap
+            args.train_bin, vocab_size=profile["vocab_size"], allow_wrap=args.allow_wrap
         )
         valid = (
-            TokenStream(args.valid_bin, vocab_size=PAPER_600M["vocab_size"])
+            TokenStream(args.valid_bin, vocab_size=profile["vocab_size"])
             if args.valid_bin else None
         )
+        required_tokens = args.steps * args.global_batch_size * args.seq_len + 1
+        if not args.allow_wrap and len(train.tokens) < required_tokens:
+            raise ValueError(f"training needs {required_tokens:,} tokens; file has {len(train.tokens):,}")
         start_step = 0
         if args.resume:
             state = torch.load(args.resume, map_location="cpu", weights_only=False)
             if state["method"] != args.method or state["world_size"] != world:
                 raise ValueError("checkpoint method or world size does not match")
             for key in (
-                "train_bin", "seq_len", "micro_batch_size", "global_batch_size", "eod_id"
+                "profile", "train_bin", "seq_len", "micro_batch_size",
+                "global_batch_size", "eod_id"
             ):
                 if state["arguments"].get(key) != getattr(args, key):
                     raise ValueError(f"checkpoint {key} does not match current run")
@@ -128,8 +139,28 @@ def main():
             start_step = int(state["step"])
             del state
         if rank == 0:
+            if args.swanlab:
+                import swanlab
+                Path(args.checkpoint_dir).mkdir(parents=True, exist_ok=True)
+                swan_run = swanlab.init(
+                    workspace=args.swanlab_workspace, project=args.swanlab_project,
+                    name=f"qwen3-70m-{args.method}-bs{args.global_batch_size}",
+                    group="qwen3-70m-tpp20", mode="online", public=False,
+                    config={
+                        "profile": args.profile, "method": args.method,
+                        "parameters": parameter_count, "sequence_length": args.seq_len,
+                        "micro_batch_size": args.micro_batch_size,
+                        "global_batch_size": args.global_batch_size,
+                        "gradient_accumulation": accumulation,
+                        "learning_rate": args.learning_rate,
+                        "steps": args.steps, "eod_id": args.eod_id,
+                        "train_bin": args.train_bin,
+                    },
+                    log_dir=str(Path(args.checkpoint_dir) / "swanlog"),
+                )
             print(json.dumps({
-                "event": "start", "method": args.method, "params": parameter_count,
+                "event": "start", "method": args.method, "profile": args.profile,
+                "params": parameter_count,
                 "world_size": world, "seq_len": args.seq_len,
                 "micro_batch_size": args.micro_batch_size,
                 "global_batch_size": args.global_batch_size,
@@ -177,12 +208,12 @@ def main():
             if not torch.isfinite(grad_norm):
                 raise FloatingPointError(f"nonfinite gradient norm on rank {rank}, step {step}")
             if args.verify:
-                _check_layer_grads(model.module)
+                _check_layer_grads(model.module, profile)
                 if not args.activation_checkpointing:
                     expected = {
                         0: accumulation,
-                        PAPER_600M["core_start"]: (k + 1) * accumulation,
-                        PAPER_600M["num_layers"] - 1: accumulation,
+                        profile["core_start"]: (k + 1) * accumulation,
+                        profile["num_layers"] - 1: accumulation,
                     }
                     if hook_counts != expected:
                         raise AssertionError(f"layer execution counts {hook_counts} != {expected}")
@@ -190,6 +221,14 @@ def main():
             dist.all_reduce(loss_sum, op=dist.ReduceOp.SUM)
             loss_sum /= world
             if rank == 0:
+                if swan_run is not None:
+                    swan_run.log({
+                        "train/loss": float(loss_sum), "train/lr": lr,
+                        "train/grad_norm": float(grad_norm),
+                        "train/jacobi_k": k,
+                        "train/gpu_peak_gib": torch.cuda.max_memory_allocated(device) / 2**30,
+                        "train/tokens": (step + 1) * args.global_batch_size * args.seq_len,
+                    }, step=step + 1)
                 print(json.dumps({
                     "event": "step", "step": step + 1, "jacobi_k": k,
                     "mean_loss": round(float(loss_sum), 6),
@@ -207,6 +246,8 @@ def main():
                     model, valid, args, rank=rank, world=world, device=device
                 )
                 if rank == 0:
+                    if swan_run is not None:
+                        swan_run.log({"valid/loss": val_loss, "valid/perplexity": math.exp(val_loss)}, step=step + 1)
                     print(json.dumps({
                         "event": "validation", "step": step + 1,
                         "jacobi_k": 3 if args.method == "p2n" else 0,
@@ -217,6 +258,8 @@ def main():
         if rank == 0:
             print(json.dumps({"event": "complete", "steps": args.steps}), flush=True)
     finally:
+        if swan_run is not None:
+            swan_run.finish()
         parallel_state.destroy_model_parallel()
         dist.destroy_process_group()
 
@@ -242,8 +285,8 @@ def _check_boundaries(device):
         raise AssertionError("causal or packed-document attention boundary failed")
 
 
-def _check_layer_grads(model):
-    for index in (0, PAPER_600M["core_start"], PAPER_600M["num_layers"] - 1):
+def _check_layer_grads(model, profile):
+    for index in (0, profile["core_start"], profile["num_layers"] - 1):
         params = list(model.decoder.layers[index].parameters())
         if not any(p.grad is not None and torch.isfinite(p.grad).all() and p.grad.abs().sum() > 0 for p in params):
             raise AssertionError(f"no finite gradient in layer {index}")

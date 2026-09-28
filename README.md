@@ -38,6 +38,26 @@ On a machine with four visible GPUs but no Slurm, use `bash scripts/run.sh quick
 
 ## Pretrain
 
+### Qwen3 70M experiment
+
+The six-layer Qwen3 decoder uses a two-layer prefix, two-layer recurrent core,
+and two-layer suffix. It has 74,325,248 parameters with separate input and
+output embeddings and the Pythia 50,304-token vocabulary. Both baseline and
+P2N use sequence length 2,048, eight RTX 4090 GPUs, microbatch 8 per GPU,
+global batch 256, learning rate 1.5e-3, and 2,836 optimizer steps (20 tokens
+per parameter). The training script reads the shared Lumia token stream and
+logs to the `ZitongWang/P2N` SwanLab workspace. Supply `SWANLAB_API_KEY` in
+`$P2N_DATA_ROOT/private/swanlab.env` with file mode 600; keep it outside Git.
+
+```bash
+METHOD=vanilla sbatch scripts/train_70m_8gpu.sbatch
+METHOD=p2n sbatch scripts/train_70m_8gpu.sbatch
+```
+
+Use a Slurm `afterok` dependency to start P2N when the baseline completes.
+The shared dataset uses the Pythia vocabulary and document-end token 0; data
+prepared with another tokenizer needs matching `vocab_size` and `eod_id`.
+
 Provide a contiguous Megatron `uint16` token stream (`.bin`, token IDs below 50,304):
 
 ```bash

@@ -28,13 +28,30 @@ PAPER_600M = {
     "core_start": 7,  # zero-based, inclusive
     "core_end": 14,  # zero-based, exclusive
     "parameter_count": 604_627_328,
+    "tie_embeddings": True,
 }
+
+QWEN3_70M = {
+    "num_layers": 6,
+    "hidden_size": 512,
+    "ffn_hidden_size": 2048,
+    "num_attention_heads": 8,
+    "num_query_groups": 2,
+    "kv_channels": 64,
+    "vocab_size": 50304,
+    "core_start": 2,
+    "core_end": 4,
+    "parameter_count": 74_325_248,
+    "tie_embeddings": False,
+}
+
+MODEL_PROFILES = {"paper-600m": PAPER_600M, "qwen3-70m": QWEN3_70M}
 
 
 def make_transformer_config(*, profile: str = "paper-600m") -> TransformerConfig:
-    if profile != "paper-600m":
+    if profile not in MODEL_PROFILES:
         raise ValueError(f"unknown model profile: {profile}")
-    p = PAPER_600M
+    p = MODEL_PROFILES[profile]
     return TransformerConfig(
         num_layers=p["num_layers"],
         hidden_size=p["hidden_size"],
@@ -92,31 +109,35 @@ def causal_document_mask(input_ids: torch.Tensor, eod_id: int) -> torch.Tensor:
 class P2NGPTModel(GPTModel):
     def __init__(
         self, config: TransformerConfig, *, method: str, eod_id: int,
-        activation_checkpointing: bool = False,
+        activation_checkpointing: bool = False, profile: str = "paper-600m",
     ):
         if method not in {"p2n", "vanilla"}:
             raise ValueError(f"unknown method: {method}")
+        if profile not in MODEL_PROFILES:
+            raise ValueError(f"unknown model profile: {profile}")
+        p = MODEL_PROFILES[profile]
         super().__init__(
             config=config,
             transformer_layer_spec=get_gpt_layer_local_spec(
                 qk_layernorm=True, normalization="RMSNorm"
             ),
-            vocab_size=PAPER_600M["vocab_size"],
+            vocab_size=p["vocab_size"],
             max_sequence_length=2048,
             pre_process=True,
             post_process=True,
             parallel_output=True,
-            share_embeddings_and_output_weights=True,
+            share_embeddings_and_output_weights=p["tie_embeddings"],
             position_embedding_type="rope",
             rotary_percent=1.0,
             rotary_base=1_000_000,
         )
         self.method = method
+        self.profile = profile
         self.eod_id = eod_id
         self.activation_checkpointing = activation_checkpointing
-        self.core_start = PAPER_600M["core_start"]
-        self.core_end = PAPER_600M["core_end"]
-        if len(self.decoder.layers) != PAPER_600M["num_layers"]:
+        self.core_start = p["core_start"]
+        self.core_end = p["core_end"]
+        if len(self.decoder.layers) != p["num_layers"]:
             raise AssertionError("Megatron built an unexpected number of layers")
 
     def _run_layers(self, hidden, begin, end, mask, rope):
@@ -163,6 +184,9 @@ class P2NGPTModel(GPTModel):
         hidden = self._run_layers(state, self.core_end, len(self.decoder.layers), mask, rope)
         if self.decoder.final_layernorm is not None:
             hidden = self.decoder.final_layernorm(hidden)
-        weight = self.shared_embedding_or_output_weight()
+        weight = (
+            self.shared_embedding_or_output_weight()
+            if self.share_embeddings_and_output_weights else None
+        )
         logits, _ = self.output_layer(hidden, weight=weight)
         return logits.transpose(0, 1).contiguous()
