@@ -1,66 +1,48 @@
-# P2N Megatron: Qwen3-style 600M
+# P2N
 
-从随机初始化训练 P2N 的 600M Qwen3 风格模型。模型使用 [Megatron Core](https://github.com/NVIDIA/Megatron-LM)；四卡训练通过 PyTorch DDP 同步，TP=PP=1。不加载 Qwen 权重，不使用 LLaMA-Factory。
+**Reusing deep representations for greater effective depth.** This repository integrates P2N pretraining into [Megatron-LM](https://github.com/NVIDIA/Megatron-LM). A seven-layer core is reused through Jacobi updates while the prefix and suffix run once. The same 604M parameters support both P2N and a standard Transformer baseline.
 
-## Quick start · Lumia
-
-仓库放在 `/home/ztwang/p2n-megatron`；数据、缓存和检查点放在 `/data3/ztwang/p2n-megatron`。
+## Install
 
 ```bash
-cd /home/ztwang/p2n-megatron
-bash scripts/setup_megatron.sh
-sbatch scripts/smoke_4gpu.sbatch
-squeue -u ztwang
-tail -f /data3/ztwang/p2n-megatron/logs/smoke-<JOBID>.out
+git clone https://github.com/ZitongWang018/p2n-megatron.git
+cd p2n-megatron
+bash scripts/install_p2n.sh
 ```
 
-Smoke 使用集群共享的只读 5B-token smallpile，运行 4×4090、2 step、64-token 序列。它验证参数量、P2N 迭代、有限梯度、四卡同步和检查点。若要测试论文的 2,048-token 长度：
+The install script reuses a compatible Lumia environment when available; otherwise it creates one outside the source tree with PyTorch 2.6.0. Set `P2N_DATA_ROOT` to choose where environments, datasets, logs, and checkpoints are stored (default: `/data3/$USER/p2n-megatron`).
+
+## Quickstart
 
 ```bash
-SMOKE_SEQ_LEN=2048 SMOKE_STEPS=1 SMOKE_SAVE_EVERY=0 \
-SMOKE_CHECKPOINTING=1 sbatch scripts/smoke_4gpu.sbatch
+bash scripts/submit.sh quickstart
 ```
 
-## Training
+This launches four GPUs on the `RTX4090` Slurm partition. It uses the shared token data on Lumia when available; otherwise it downloads a small public token sample automatically. Logs and checkpoints are written under `$P2N_DATA_ROOT`. The quickstart runs two optimizer steps and checks the distributed training path.
 
-准备由目标 tokenizer 编码的 Pile token 流，格式为 Megatron `uint16 .bin`，token ID 小于 50,304。正式训练约需 120B token；现有 smallpile 不够。论文正文没有唯一指定 tokenizer，因此必须记录正式数据所用 tokenizer 与 EOD ID。
+## Pretrain
+
+Provide a contiguous Megatron `uint16` token stream (`.bin`, token IDs below 50,304):
 
 ```bash
-TRAIN_BIN=/data3/ztwang/p2n-megatron/data/pile_train.bin \
-sbatch scripts/train_4gpu.sbatch
+TRAIN_BIN=/path/to/pile_train.bin bash scripts/submit.sh train
 
-# 相同架构和数据顺序的 Vanilla 对照
-TRAIN_BIN=/data3/ztwang/p2n-megatron/data/pile_train.bin \
-METHOD=vanilla sbatch scripts/train_4gpu.sbatch
+# Parameter-matched baseline
+TRAIN_BIN=/path/to/pile_train.bin METHOD=vanilla bash scripts/submit.sh train
 ```
 
-可选变量：`VALID_BIN` 设置独立验证集；`EOD_ID` 设置文档结束 token（默认 `50256`）；`RESUME_CHECKPOINT` 从保存的 `step_*.pt` 继续；`TRAIN_CHECKPOINTING=0` 关闭激活重计算。日志和检查点保存在 `/data3/ztwang/p2n-megatron/{logs,checkpoints}`。默认 57,221 step、序列 2,048、全局 batch 1,024、每 500 step 保存一次。
+The default recipe uses 2,048 tokens, global batch 1,024, BF16, AdamW, 57,221 steps, and a 5% warmup followed by cosine decay. Four 24 GiB GPUs use activation checkpointing and gradient accumulation. Set `VALID_BIN` for validation, `EOD_ID` for packed-document boundaries, and `RESUME_CHECKPOINT` to resume. Full paper-scale training requires approximately 120B tokens; the quickstart data is only for verifying execution. Record the tokenizer and EOD ID used to prepare your training stream.
 
-## Method & configuration
+## Implementation
 
-| 项目 | 设置 |
-|---|---|
-| 架构 | 21 层，hidden 1,280，FFN 5,632，Q/KV heads 20/5，RoPE、Q/K RMSNorm、SwiGLU |
-| 参数 | 604,627,328；词表 50,304；共享输入/输出词嵌入 |
-| P2N | 前 7 层 + 共享 core 7 层 + 后 7 层；core warm pass 后每 batch 采样 K=2/3 次 Jacobi 更新，完整反向传播 |
-| 优化 | AdamW，peak LR 1.5e-3，5% warmup，cosine 至 10%，BF16，seed 42 |
+| Component | Location |
+| --- | --- |
+| P2N model and recurrence | `p2n/model.py` |
+| Token stream reader | `p2n/data.py` |
+| Distributed pretraining | `pretrain_p2n.py` |
+| Slurm launch scripts | `scripts/` |
+| Megatron Core | `megatron/core/` |
 
-P2N 反馈为 `core_input + ShiftPrev(previous_core_output)`；序列首位和 EOD 后清零，注意力也隔离 packed 文档。`method=vanilla` 使用相同参数层和 token 预算，不执行反馈迭代。
+The model has 21 layers, hidden size 1,280, FFN size 5,632, 20 query heads, five KV heads, Q/K RMSNorm, SwiGLU, and RoPE. P2N executes the core once to initialize its state, then applies two or three Jacobi updates per training step with full backpropagation. `METHOD=vanilla` runs each physical layer once. Token shifts and attention masks both reset at document boundaries.
 
-## Files
-
-```text
-p2n/model.py                 Megatron 模型与 P2N 递推
-p2n/data.py                  uint16 token 流读取
-train.py                     训练、验证、检查点
-scripts/setup_megatron.sh    固定 Megatron Core 版本并检查环境
-scripts/env.sh               Lumia 运行环境
-scripts/smoke_4gpu.sbatch    四卡 smoke
-scripts/train_4gpu.sbatch    四卡预训练
-```
-
-## Reproduction status
-
-四卡 smoke 已验证：K=2/3、保存与恢复、独立验证集、Vanilla 对照、2,048-token 长度和梯度累积。24 GiB 4090 在 2,048 token 下需要激活重计算，正式脚本默认开启。该项目实现**预训练阶段**；完整 Pile 训练、后续 SFT/评测和带 KV cache 的生成尚未完成，smoke 结果不能视为论文指标。
-
-Megatron 固定为 `core_v0.13.0`（`c550cf6c41c31cd3ec72e05c25ea0c979f2b6631`）。Lumia 脚本复用账号已有的 PyTorch 2.6.0 环境及 `/data3/ztwang/p2n-megatron/shim`；在新机器上需先准备等效的 PyTorch/CUDA 环境并修改 `scripts/env.sh`。项目结构参考 [PonderLM-2](https://github.com/LUMIA-Group/PonderLM-2)。
+This repository is based on Megatron-LM `core_v0.13.0` (`c550cf6c41c31cd3ec72e05c25ea0c979f2b6631`). The implementation currently covers pretraining and its parameter-matched baseline; downstream fine-tuning and generation are outside this release. See [LICENSE](LICENSE) for the upstream license.
