@@ -20,6 +20,8 @@ bash scripts/submit.sh quickstart
 
 This launches four GPUs on the `RTX4090` Slurm partition. It uses the shared token data on Lumia when available; otherwise it downloads a small public token sample automatically. Logs and checkpoints are written under `$P2N_DATA_ROOT`. The quickstart runs two optimizer steps and checks the distributed training path.
 
+On a machine with four visible GPUs but no Slurm, use `bash scripts/run.sh quickstart` instead.
+
 ## Pretrain
 
 Provide a contiguous Megatron `uint16` token stream (`.bin`, token IDs below 50,304):
@@ -31,6 +33,8 @@ TRAIN_BIN=/path/to/pile_train.bin bash scripts/submit.sh train
 TRAIN_BIN=/path/to/pile_train.bin METHOD=vanilla bash scripts/submit.sh train
 ```
 
+For a direct four-GPU launch without Slurm, replace `submit.sh` with `run.sh`.
+
 The default recipe uses 2,048 tokens, global batch 1,024, BF16, AdamW, 57,221 steps, and a 5% warmup followed by cosine decay. Four 24 GiB GPUs use activation checkpointing and gradient accumulation. Set `VALID_BIN` for validation, `EOD_ID` for packed-document boundaries, and `RESUME_CHECKPOINT` to resume. Full paper-scale training requires approximately 120B tokens; the quickstart data is only for verifying execution. Record the tokenizer and EOD ID used to prepare your training stream.
 
 ## Implementation
@@ -40,9 +44,9 @@ The default recipe uses 2,048 tokens, global batch 1,024, BF16, AdamW, 57,221 st
 | P2N model and recurrence | `p2n/model.py` |
 | Token stream reader | `p2n/data.py` |
 | Distributed pretraining | `pretrain_p2n.py` |
-| Slurm launch scripts | `scripts/` |
+| Direct and Slurm launch scripts | `scripts/run.sh`, `scripts/submit.sh` |
 | Megatron Core | `megatron/core/` |
 
-The model has 21 layers, hidden size 1,280, FFN size 5,632, 20 query heads, five KV heads, Q/K RMSNorm, SwiGLU, and RoPE. P2N executes the core once to initialize its state, then applies two or three Jacobi updates per training step with full backpropagation. `METHOD=vanilla` runs each physical layer once. Token shifts and attention masks both reset at document boundaries.
+The decoder follows Qwen3's GQA, RMSNorm, and SwiGLU layout. It has 21 layers, hidden size 1,280, FFN size 5,632, 20 query heads, five KV heads, and RoPE. P2N executes the core once to initialize its state, then applies two or three Jacobi updates per training step with full backpropagation. `METHOD=vanilla` runs each physical layer once. Token shifts and attention masks both reset at document boundaries.
 
 This repository is based on Megatron-LM `core_v0.13.0` (`c550cf6c41c31cd3ec72e05c25ea0c979f2b6631`). The implementation currently covers pretraining and its parameter-matched baseline; downstream fine-tuning and generation are outside this release. See [LICENSE](LICENSE) for the upstream license.
