@@ -161,8 +161,8 @@ class P2NGPTModel(GPTModel):
     def forward(self, input_ids: torch.Tensor, *, jacobi_iterations: int = 0):
         if input_ids.ndim != 2:
             raise ValueError("input_ids must have shape [batch, seq]")
-        if self.method == "p2n" and jacobi_iterations < 1:
-            raise ValueError("P2N needs at least one Jacobi iteration")
+        if self.method == "p2n" and jacobi_iterations < 0:
+            raise ValueError("Jacobi iterations must be non-negative")
         if self.method == "vanilla" and jacobi_iterations != 0:
             raise ValueError("Vanilla does not use Jacobi iterations")
         batch, seq = input_ids.shape

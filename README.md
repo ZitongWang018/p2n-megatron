@@ -58,6 +58,10 @@ Use a Slurm `afterok` dependency to start P2N when the baseline completes.
 The shared dataset uses the Pythia vocabulary and document-end token 0; data
 prepared with another tokenizer needs matching `vocab_size` and `eod_id`.
 
+To evaluate both final checkpoints on the same 4,096 validation sequences,
+including a sweep over P2N Jacobi updates `K=0,...,5`, run
+`sbatch scripts/eval_70m_8gpu.sbatch`.
+
 Provide a contiguous Megatron `uint16` token stream (`.bin`, token IDs below 50,304):
 
 ```bash
