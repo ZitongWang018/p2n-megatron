@@ -2,6 +2,20 @@
 
 **Reusing deep representations for greater effective depth.** This repository integrates P2N pretraining into [Megatron-LM](https://github.com/NVIDIA/Megatron-LM). A seven-layer core is reused through Jacobi updates while the prefix and suffix run once. The same 604M parameters support both P2N and a standard Transformer baseline.
 
+## Overview
+
+![P2N training and inference overview](assets/p2n-overview.png)
+
+Let $X=\mathrm{Prefix}(E)$ be the input to the shared core. Training starts with a warm pass and applies $K$ Jacobi updates:
+
+$$
+H^{(0)}=\mathrm{Core}(X),\qquad
+H^{(k+1)}=\mathrm{Core}\!\left(X+\mathrm{ShiftPrev}(H^{(k)})\right),\qquad
+\mathrm{logits}=\mathrm{LMHead}\!\left(\mathrm{Suffix}(H^{(K)})\right).
+$$
+
+`ShiftPrev` zeros the first position and resets after each document boundary. The implementation uses $K\in\{2,3\}$ during training. The right side of the figure illustrates autoregressive inference; this repository implements the training path.
+
 ## Install
 
 ```bash
