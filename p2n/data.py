@@ -1,13 +1,9 @@
-"""Deterministic contiguous batches from Megatron's uint16 indexed .bin payload.
-
-The paired .idx remains available for audit with Megatron IndexedDataset. This
-reader intentionally uses the contiguous .bin token payload so every global
-batch has an exact, non-overlapping token offset on four data-parallel ranks.
-"""
+"""Deterministic batches from a uint16 stream or ordered NumPy token shards."""
 
 from __future__ import annotations
 
 from pathlib import Path
+from bisect import bisect_right
 
 import numpy as np
 import torch
@@ -16,15 +12,54 @@ import torch
 class TokenStream:
     def __init__(self, path: str, *, vocab_size: int, allow_wrap: bool = False):
         file = Path(path)
-        if file.suffix != ".bin" or not file.is_file():
-            raise ValueError(f"expected an existing Megatron .bin file: {file}")
-        if file.stat().st_size % np.dtype("uint16").itemsize:
-            raise ValueError("uint16 token file has an odd number of bytes")
-        self.tokens = np.memmap(file, dtype=np.uint16, mode="r")
+        if file.is_file() and file.suffix == ".bin":
+            if file.stat().st_size % np.dtype("uint16").itemsize:
+                raise ValueError("uint16 token file has an odd number of bytes")
+            self.shards = [np.memmap(file, dtype=np.uint16, mode="r")]
+        elif file.is_dir():
+            paths = sorted(file.glob("input_ids_2048_*.npy"))
+            if not paths:
+                raise ValueError(f"no input_ids_2048_*.npy shards in {file}")
+            self.shards = []
+            for shard_path in paths:
+                shard = np.load(shard_path, mmap_mode="r")
+                if shard.ndim != 2 or shard.shape[1] != 2048 or shard.dtype not in (
+                    np.dtype("uint16"), np.dtype("int32"), np.dtype("int64")
+                ):
+                    raise ValueError(f"unexpected token shard layout: {shard_path}")
+                self.shards.append(shard.reshape(-1))
+        else:
+            raise ValueError(f"expected a uint16 .bin file or NumPy shard directory: {file}")
+        self.offsets = [0]
+        for shard in self.shards:
+            self.offsets.append(self.offsets[-1] + len(shard))
         self.vocab_size = vocab_size
         self.allow_wrap = allow_wrap
-        if len(self.tokens) < 2:
+        if len(self) < 2:
             raise ValueError("token file is too short")
+
+    def __len__(self):
+        return self.offsets[-1]
+
+    def _read(self, start: int, stop: int):
+        if stop > len(self):
+            if not self.allow_wrap:
+                raise RuntimeError(
+                    f"token stream exhausted at {stop:,}; file has {len(self):,} tokens. "
+                    "Supply the full Pile stream or explicitly allow wrapping for a non-paper run."
+                )
+            indices = np.arange(start, stop, dtype=np.int64) % len(self)
+            return np.array([self._read(int(i), int(i) + 1)[0] for i in indices], dtype=np.int64)
+        chunks = []
+        while start < stop:
+            shard_index = bisect_right(self.offsets, start) - 1
+            end = min(stop, self.offsets[shard_index + 1])
+            chunks.append(np.asarray(
+                self.shards[shard_index][start - self.offsets[shard_index]:end - self.offsets[shard_index]],
+                dtype=np.int64,
+            ))
+            start = end
+        return np.concatenate(chunks) if len(chunks) > 1 else np.array(chunks[0], copy=True)
 
     def batch(self, *, first_token: int, batch_size: int, seq_len: int, device: torch.device):
         # Each sample needs one label beyond its input tokens.
@@ -32,17 +67,7 @@ class TokenStream:
         for sample in range(batch_size):
             start = first_token + sample * seq_len
             stop = start + seq_len + 1
-            if stop <= len(self.tokens):
-                row = np.array(self.tokens[start:stop], dtype=np.int64)
-            elif self.allow_wrap:
-                indices = np.arange(start, stop, dtype=np.int64) % len(self.tokens)
-                row = np.asarray(self.tokens[indices], dtype=np.int64)
-            else:
-                raise RuntimeError(
-                    f"token stream exhausted at {stop:,}; file has {len(self.tokens):,} tokens. "
-                    "Supply the full Pile stream or explicitly allow wrapping for a non-paper run."
-                )
-            rows.append(row)
+            rows.append(self._read(start, stop))
         tokens = torch.tensor(np.stack(rows), device=device, dtype=torch.long)
         if int(tokens.max()) >= self.vocab_size:
             raise ValueError(

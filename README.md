@@ -46,20 +46,25 @@ heads, tied embeddings, and a four-layer core (layers 5–8). The baseline and
 P2N use the same 149,541,120 parameters. Training uses sequence length 2,048,
 global batch 1,024, AdamW (β₁=0.9, β₂=0.95, weight decay 0.1), peak learning
 rate 1.5e-3, 5% warmup, cosine decay to 10% of peak, BF16, and gradient clipping
-at 1. The 1,427-step run processes 2.993B tokens, or 20.01 tokens per parameter.
+at 1. The 14,262-step run processes 29.91B tokens, or 200.01 tokens per parameter.
 The per-GPU microbatch is 8 on eight RTX 4090 GPUs, matching the paper.
 Activation checkpointing keeps the recurrent core within GPU memory.
 
 ```bash
-METHOD=vanilla sbatch scripts/train_150m_8gpu.sbatch
-METHOD=p2n sbatch scripts/train_150m_8gpu.sbatch
+METHOD=vanilla sbatch scripts/train_150m_tpp200_8gpu.sbatch
+METHOD=p2n sbatch scripts/train_150m_tpp200_8gpu.sbatch
 ```
 
-Set `TRAIN_BIN` and `VALID_BIN` to contiguous `uint16` token streams if the
-Lumia shared Pythia-tokenized data is unavailable. On Lumia, put
+The Lumia recipe reads the full ordered Pile token shards from
+`/data0/byzeng/data2/byzeng/allpile`; its first tokens match the earlier 5B
+token stream. Set `TRAIN_BIN` to an ordered `input_ids_2048_*.npy` shard
+directory or a contiguous `uint16` `.bin` stream and `VALID_BIN` to a matching
+validation stream on other machines. On Lumia, put
 `SWANLAB_API_KEY=...` in `$P2N_DATA_ROOT/private/swanlab.env` with file mode 600
-to log both runs to `ZitongWang/P2N`. The paper trains for 200 tokens per
-parameter; this recipe deliberately runs for 20.
+to log both runs to `ZitongWang/P2N`.
+
+For a shorter 20-token-per-parameter experiment, use
+`scripts/train_150m_8gpu.sbatch` with the shared 5B token stream.
 
 ### Qwen3 70M experiment
 

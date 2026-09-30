@@ -121,8 +121,8 @@ def main():
             if args.valid_bin else None
         )
         required_tokens = args.steps * args.global_batch_size * args.seq_len + 1
-        if not args.allow_wrap and len(train.tokens) < required_tokens:
-            raise ValueError(f"training needs {required_tokens:,} tokens; file has {len(train.tokens):,}")
+        if not args.allow_wrap and len(train) < required_tokens:
+            raise ValueError(f"training needs {required_tokens:,} tokens; file has {len(train):,}")
         start_step = 0
         if args.resume:
             state = torch.load(args.resume, map_location="cpu", weights_only=False)
@@ -144,8 +144,8 @@ def main():
                 Path(args.checkpoint_dir).mkdir(parents=True, exist_ok=True)
                 swan_run = swanlab.init(
                     workspace=args.swanlab_workspace, project=args.swanlab_project,
-                    name=f"{args.profile}-{args.method}-bs{args.global_batch_size}",
-                    group=f"{args.profile}-tpp20", mode="online", public=False,
+                    name=f"{args.profile}-{args.method}-tpp{round(args.steps * args.global_batch_size * args.seq_len / parameter_count)}-bs{args.global_batch_size}",
+                    group=f"{args.profile}-tpp{round(args.steps * args.global_batch_size * args.seq_len / parameter_count)}", mode="online", public=False,
                     config={
                         "profile": args.profile, "method": args.method,
                         "parameters": parameter_count, "sequence_length": args.seq_len,
@@ -168,7 +168,7 @@ def main():
                 "world_size": world, "seq_len": args.seq_len,
                 "micro_batch_size": args.micro_batch_size,
                 "global_batch_size": args.global_batch_size,
-                "accumulation": accumulation, "train_tokens": len(train.tokens),
+                "accumulation": accumulation, "train_tokens": len(train),
                 "start_step": start_step,
             }), flush=True)
         _check_boundaries(device)
