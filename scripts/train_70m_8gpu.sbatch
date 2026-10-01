@@ -43,8 +43,8 @@ exec "$PYTHON" -m torch.distributed.run --standalone --nnodes=1 --nproc-per-node
   --train-bin "$train_bin" --valid-bin "$valid_bin" \
   --seq-len 2048 --eod-id 0 \
   --micro-batch-size 8 --global-batch-size 256 \
-  --steps "${TRAIN_STEPS:-2836}" --learning-rate 1.5e-3 --weight-decay 0.01 \
-  --warmup-ratio 0.01 --min-lr-ratio 0.1 \
+  --steps "${TRAIN_STEPS:-2836}" --learning-rate 1.5e-3 --weight-decay "${WEIGHT_DECAY:-0.1}" \
+  --warmup-ratio "${WARMUP_RATIO:-0.05}" --min-lr-ratio 0.1 \
   --eval-every 709 --eval-batches 4 --save-every 709 \
   --activation-checkpointing "${swanlab_args[@]}" "${verify_args[@]}" \
-  --checkpoint-dir "$P2N_DATA_ROOT/checkpoints/qwen3-70m-${method}-bs256"
+  --checkpoint-dir "${CHECKPOINT_DIR:-$P2N_DATA_ROOT/checkpoints/qwen3-70m-${method}-revised-bs256}"

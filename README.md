@@ -86,9 +86,15 @@ Use a Slurm `afterok` dependency to start P2N when the baseline completes.
 The shared dataset uses the Pythia vocabulary and document-end token 0; data
 prepared with another tokenizer needs matching `vocab_size` and `eod_id`.
 
-To evaluate both final checkpoints on the same 4,096 validation sequences,
+To evaluate the original TPP20 checkpoints on the same 4,096 validation sequences,
 including a sweep over P2N Jacobi updates `K=0,...,5`, run
 `sbatch scripts/eval_70m_8gpu.sbatch`.
+
+The original 70M run used weight decay 0.01 and 1% warmup. The launcher now
+defaults to the paper's weight decay 0.1 and 5% warmup, writing to a separate
+`revised` checkpoint directory. The six-layer, untied model and batch 256
+remain an exploratory configuration. See [70M results and implementation
+audit](docs/70m-audit.md) for measured results and protocol differences.
 
 Provide a contiguous Megatron `uint16` token stream (`.bin`, token IDs below 50,304):
 

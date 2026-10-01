@@ -290,6 +290,11 @@ def _check_boundaries(device):
 
 
 def _check_layer_grads(model, profile):
+    for name, parameter in model.named_parameters():
+        if parameter.requires_grad and (
+            parameter.grad is None or not torch.isfinite(parameter.grad).all()
+        ):
+            raise AssertionError(f"missing or nonfinite gradient in parameter {name}")
     for index in (0, profile["core_start"], profile["num_layers"] - 1):
         params = list(model.decoder.layers[index].parameters())
         if not any(p.grad is not None and torch.isfinite(p.grad).all() and p.grad.abs().sum() > 0 for p in params):
